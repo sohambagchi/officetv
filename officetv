@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# officetv: control a Waydroid Android TV session. Needs waydroid and adb on PATH.
+set -euo pipefail
+
+# Work the same from SSH as from the desktop: target the user's Wayland session.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+
+SPOTIFY=com.spotify.tv.android
+
+usage() {
+  cat <<EOF
+usage: officetv <command>
+  start | stop | restart       Waydroid session (restart also recovers a dead container)
+  restart spotify              force-stop and relaunch Spotify
+  play | pause | next | prev   media controls
+  mute | unmute                mute Android media audio
+  volume [0-100]               set (or show) media volume in percent
+  status                       session, playback and volume state
+  adb <args>                   run adb against the TV (e.g. officetv adb shell)
+EOF
+}
+
+container_running() { waydroid status 2>/dev/null | grep -q '^Container:.*RUNNING'; }
+
+device() {
+  local ip
+  ip=$(waydroid status 2>/dev/null | awk '/^IP address:/ {print $3}')
+  [[ -n $ip && $ip != UNKNOWN ]] || { echo "officetv: TV is not running (try: officetv start)" >&2; exit 1; }
+  echo "$ip:5555"
+}
+
+ash() {
+  local dev
+  dev=$(device)
+  adb connect "$dev" >/dev/null 2>&1 || true
+  timeout 20 adb -s "$dev" shell "$@" </dev/null
+}
+
+start() {
+  if container_running; then echo "already running"; return; fi
+  # A container that died underneath (e.g. Android rebooted itself) leaves a stale session.
+  waydroid session stop >/dev/null 2>&1 || true
+  setsid nohup waydroid session start >/dev/null 2>&1 </dev/null &
+  for _ in $(seq 60); do
+    [[ $(waydroid prop get sys.boot_completed 2>/dev/null) == 1 ]] && break
+    sleep 2
+  done
+  [[ $(waydroid prop get sys.boot_completed 2>/dev/null) == 1 ]] || { echo "officetv: boot timed out" >&2; exit 1; }
+  timeout 20 waydroid show-full-ui >/dev/null 2>&1 || true
+  echo "started"
+}
+
+stop() {
+  adb disconnect >/dev/null 2>&1 || true
+  waydroid session stop
+  echo "stopped"
+}
+
+is_muted() { ash dumpsys audio 2>/dev/null | grep -m1 -A3 '^- STREAM_MUSIC' | grep -q 'Muted: true'; }
+
+# Prints "<index> <max>" for STREAM_MUSIC.
+vol_state() { ash cmd media_session volume --stream 3 --get 2>/dev/null | sed -n 's/.*volume is \([0-9]*\) in range \[0\.\.\([0-9]*\)\].*/\1 \2/p'; }
+
+volume() {
+  local cur max target key
+  read -r cur max < <(vol_state)
+  if [[ -z ${1:-} ]]; then
+    if is_muted; then echo "volume muted"; else echo "volume $(( cur * 100 / max ))%"; fi
+    return
+  fi
+  [[ $1 =~ ^[0-9]+$ && $1 -le 100 ]] || { echo "officetv: volume must be 0-100" >&2; exit 1; }
+  # `media_session volume --set` lands on the headphone profile, not the active
+  # speaker output, so step there with volume keys (one batched input call).
+  target=$(( ($1 * max + 50) / 100 ))
+  if (( target > cur )); then key=KEYCODE_VOLUME_UP; else key=KEYCODE_VOLUME_DOWN; fi
+  if (( target != cur )); then
+    # shellcheck disable=SC2046,SC2059
+    ash input keyevent $(printf "$key %.0s" $(seq $(( target > cur ? target - cur : cur - target ))))
+  fi
+  read -r cur max < <(vol_state)
+  echo "volume $(( cur * 100 / max ))%"
+}
+
+status() {
+  waydroid status | head -2
+  container_running || return 0
+  ash dumpsys media_session 2>/dev/null | sed -n 's/.*state=PlaybackState {state=\([A-Z_]*\).*/playback: \1/p' | head -n1
+  volume
+}
+
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart)
+    if [[ ${2:-} == spotify ]]; then
+      ash am force-stop "$SPOTIFY"
+      ash am start -n "$SPOTIFY/com.spotify.app.androidtv.MainActivity" >/dev/null
+      echo "spotify restarted"
+    else
+      stop; start
+    fi ;;
+  play | pause | next) ash cmd media_session dispatch "$1" >/dev/null; echo "$1" ;;
+  prev) ash cmd media_session dispatch previous >/dev/null; echo prev ;;
+  mute) is_muted || ash input keyevent KEYCODE_VOLUME_MUTE; echo muted ;;
+  unmute) ! is_muted || ash input keyevent KEYCODE_VOLUME_MUTE; echo unmuted ;;
+  volume) volume "${2:-}" ;;
+  status) status ;;
+  adb)
+    shift
+    dev=$(device)
+    adb connect "$dev" >/dev/null 2>&1 || true
+    exec adb -s "$dev" "$@" ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac
