@@ -5,8 +5,11 @@
 # Run as your normal user (not root); it calls sudo where needed. Safe to rerun,
 # and it should be rerun after upgrading the waydroid package.
 #
-#   ./install.sh [--autostart]
+#   ./install.sh [--autostart] [--fresh]
 #   curl -fsSL <raw url of this file> | bash -s -- [--autostart]
+#
+# --fresh wipes Android (apps, sign-ins, images) and reinstalls the waydroid
+# package first, i.e. behaves as on a new machine.
 set -euo pipefail
 
 REPO_URL="${OFFICETV_REPO:-https://github.com/sohambagchi/officetv.git}"
@@ -14,10 +17,12 @@ OTA="${OFFICETV_OTA:-https://waydroid-atv.github.io/ota/a16-tv}"
 SYSTEM_TYPE="${OFFICETV_SYSTEM_TYPE:-GAPPS}" # Play Store is needed for Spotify
 NET_SCRIPT=/usr/lib/waydroid/data/scripts/waydroid-net.sh
 AUTOSTART=0
+FRESH=0
 for arg in "$@"; do
   case $arg in
     --autostart) AUTOSTART=1 ;;
-    *) echo "usage: install.sh [--autostart]" >&2; exit 1 ;;
+    --fresh) FRESH=1 ;;
+    *) echo "usage: install.sh [--autostart] [--fresh]" >&2; exit 1 ;;
   esac
 done
 
@@ -44,6 +49,16 @@ if ! grep -qw binder /proc/filesystems; then
 fi
 [[ -n ${WAYLAND_DISPLAY:-} || -S /run/user/$(id -u)/wayland-0 ]] ||
   echo "warning: no Wayland session found; Waydroid needs one (GNOME/KDE/sway) to show the TV"
+
+if [[ $FRESH == 1 ]] && command -v waydroid >/dev/null; then
+  say "Wiping the existing Waydroid install (--fresh)"
+  waydroid session stop >/dev/null 2>&1 || true
+  sudo systemctl stop waydroid-container || true
+  sudo rm -rf /var/lib/waydroid "$HOME/.local/share/waydroid"
+  rm -f "$HOME"/.local/share/applications/waydroid.*.desktop
+  # Restores the stock waydroid-net.sh, so the networking check below is exercised.
+  if command -v apt-get >/dev/null; then sudo apt-get install -y --reinstall waydroid; fi
+fi
 
 say "Installing Waydroid"
 if ! command -v waydroid >/dev/null; then

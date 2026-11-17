@@ -43,7 +43,7 @@ start() {
   # A container that died underneath (e.g. Android rebooted itself) leaves a stale session.
   waydroid session stop >/dev/null 2>&1 || true
   setsid nohup waydroid session start >/dev/null 2>&1 </dev/null &
-  for _ in $(seq 60); do
+  for _ in $(seq 150); do # first boot after a fresh install is slow
     [[ $(waydroid prop get sys.boot_completed 2>/dev/null) == 1 ]] && break
     sleep 2
   done

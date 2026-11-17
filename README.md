@@ -20,7 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/sohambagchi/officetv/main/install.s
 ```
 
 Run it as your normal user; it asks for sudo. It is idempotent, so rerun it after upgrading the
-`waydroid` package (the upgrade reverts the networking fix below). It:
+`waydroid` package (the upgrade reverts the networking fix below). `--fresh` first wipes Android
+(apps, sign-ins, images) and reinstalls the `waydroid` package, as on a new machine. It:
 
 1. checks the kernel has binder support and installs Waydroid (Debian/Ubuntu via repo.waydro.id;
    elsewhere install Waydroid yourself first);
